@@ -5,9 +5,17 @@ namespace JetThrustPhysics
 {
     public static partial class Utility
     {
+
         public static double RadToDeg(double rad)
         {
             return rad * 180.0 / Math.PI;
+        }
+
+        public static Vector3 InverseTransformDirection(Quaternion rotation, Vector3 vector)
+        {
+
+            Vector3 output = Quaternion.Invert(rotation) * vector;
+            return output;
         }
 
         public static Vector3 DirectionToRotation(Vector3 direction)
