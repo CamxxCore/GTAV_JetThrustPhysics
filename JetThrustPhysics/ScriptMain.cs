@@ -1,11 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
+using System.Runtime.InteropServices;
 using GTA;
 using GTA.Math;
 using GTA.Native;
+using JetBlast.Memory;
+using JetBlast.Utility;
 
-namespace JetThrustPhysics
+namespace JetBlast
 {
     public class ScriptMain : Script
     {
@@ -22,108 +26,110 @@ namespace JetThrustPhysics
         /// <summary>
         /// Scalar for engine thrust forces
         /// </summary>
-        private const float ThrustScale = 0.872f;
+        private const float ThrustScale = 0.80f;
 
         /// <summary>
         /// Scalar for engine reverse thrust forces
         /// </summary>
-        private const float ReverseThrustScale = 0.4f;
+        private const float ReverseThrustScale = 0.34f;
 
-        /// <summary>
-        /// Radius for thrust zone raycast checking
-        /// </summary>
-        private const float ThrustRadius = 4.4f;
+        private readonly Dictionary<int, TrackedVehicleInfo> trackedVehicles = new Dictionary<int, TrackedVehicleInfo>();
 
-        private Dictionary<int, KnownVehicleInfo> knownVehicles = new Dictionary<int, KnownVehicleInfo>();
-
-        private Dictionary<int, KnownPedInfo> knownPeds = new Dictionary<int, KnownPedInfo>();
-
-        private Entity thrustForceTarget = null;
+        private readonly Dictionary<int, TrackedPedInfo> trackedPeds = new Dictionary<int, TrackedPedInfo>();
 
         public ScriptMain()
         {
-          //  Function.Call(Hash.REQUEST_ANIM_DICT, "MISSSOLOMON_3");
-          //  Function.Call(Hash.REQUEST_NAMED_PTFX_ASSET, "scr_solomon3");
-          //  Function.Call(Hash.REQUEST_NAMED_PTFX_ASSET, "scr_solomon3");
-          //  Function.Call(Hash.REQUEST_SCRIPT_AUDIO_BANK, "Trv_4_747", 0);
-
+            MemoryAccess.Init();
             Tick += OnTick;
         }
 
-        private bool GetEntityShapeTestCapsuleResult(Vector3 start, Vector3 target, float radius, Entity ignore, out Entity hitEntity)
+        private static bool DoEntityCapsuleTest(Vector3 start, Vector3 target, float radius, Entity ignore, out Entity hitEntity)
         {
-            var cast = World.RaycastCapsule(start, target, radius, IntersectOptions.Everything, ignore);
+            if (UserConfig.DebugMode)
+                GameUtility.DrawLine(start, target, Color.DeepPink);
 
-            hitEntity = cast.HitEntity;
+            var raycastResult = World.RaycastCapsule(start, target, radius, IntersectOptions.Everything, ignore);
 
-            return cast.DitHitEntity;
+            hitEntity = raycastResult.HitEntity;
+
+            return raycastResult.DitHitEntity;
         }
 
-        private void ApplyThrustForce(Entity entity, Vector3 origin, Vector3 direction, float scale)
+        private static void ApplyThrustForce(Entity entity, Vector3 origin, Vector3 direction, float scale)
         {
             if (Function.Call<int>(Hash.GET_VEHICLE_CLASS, entity) == 16 || entity.HeightAboveGround > 15.0f) return;
-        
-            float entityDist = (entity.Position - origin).Length();
 
-            var force = (direction + new Vector3(0, 0, 0.0928f) * (32.0f / entityDist)) * scale;
+            float entityDist = Vector3.Distance(entity.Position, origin);
 
-            if (entity is Ped && (entity as Ped).IsRagdoll == false)
-                Function.Call(Hash.SET_PED_TO_RAGDOLL, entity.Handle, 800, 1500, 2, 1, 1, 0);
+            float zForce, scaleModifier;
 
-            entity.ApplyForce(force, new Vector3(0.0f, 0.0f, 0.388f), ForceType.MaxForceRot2);
+            Vector3 rotationalForce;
 
-            if (entity.Velocity.Z >= 4.8f)
-                entity.Velocity = new Vector3(entity.Velocity.X, entity.Velocity.Y, 4.8f);
-        }
+            if (entity is Vehicle)
+            {
+                zForce = RandomEx.GetBoolean(0.50f) ? 0.0332f : 0.0318f;
+                scaleModifier = 22.0f;
+                rotationalForce = new Vector3(0.0f, 0.1f, 0.40f);
+            }
 
-        private VehicleSize GetVehicleSize(Vehicle vehicle)
-        {
-            var size = vehicle.Model.GetDimensions().Length();
+            else if (entity is Ped)
+            {
+                if (((Ped)entity).IsRagdoll == false)
+                    Function.Call(Hash.SET_PED_TO_RAGDOLL, entity.Handle, 800, 1500, 2, 1, 1, 0);
+                zForce = 0.0034f;
+                scaleModifier = 30.0f;
+                rotationalForce = new Vector3(0.0f, 0.0f, 0.12f);
+            }
 
-            if (size > 100.0f)
-                return VehicleSize.Big;
-            if (size > 40.0f)
-                return VehicleSize.Med;
             else
-                return VehicleSize.Small;
+            {
+                zForce = 0.000f;
+                scaleModifier = 30.0f;
+                rotationalForce = new Vector3(0.0f, 0.338f, 0.0f);
+            }
+
+            var force = (direction + new Vector3(0, 0, zForce)) * Math.Min(1.0f, scaleModifier / entityDist) * scale;
+
+            entity.ApplyForce(force, rotationalForce, ForceType.MaxForceRot);
         }
 
-        private bool IsVehicleValid(Vehicle vehicle)
+        private static bool CanVehicleHaveEnginePhysics(Vehicle vehicle)
         {
-            return vehicle.IsAlive && vehicle.EngineRunning && vehicle.HeightAboveGround < 24.0f;
+            return vehicle.IsAlive &&
+                   vehicle.EngineRunning &&
+                   vehicle.HeightAboveGround < 24.0f;
         }
 
-        private void RemoveVehicle(Vehicle vehicle)
+        private void StopTracking(Ped ped)
         {
-            knownVehicles.Remove(vehicle.Handle);
+            trackedPeds.Remove(ped.Handle);
         }
 
-        private void RemovePed(Ped ped)
+        private void StopTracking(Vehicle vehicle)
         {
-            knownPeds.Remove(ped.Handle);
-        }
+            TrackedVehicleInfo info;
 
-        private bool IsPedValid(Ped ped)
-        {
-            return ped.IsOnFoot;
+            if (!trackedVehicles.TryGetValue(vehicle.Handle, out info)) return;
+
+            info.StopHeatHaze();
+
+            trackedVehicles.Remove(vehicle.Handle);
         }
 
         private void UpdateEngineAnimTrigger(Vehicle vehicle, Vector3 position)
         {
             var peds = World.GetNearbyPeds(position, 4.0f);
 
-            for (int i = 0; i < peds.Length; i++)
+            foreach (Ped ped in peds)
             {
-                if (peds[i].Handle == Game.Player.Character.Handle) continue;
+                if (ped.Handle == Game.Player.Character.Handle) continue;
 
-                var ped = peds[i];
-
-              /*  if (Function.Call<bool>(Hash.GET_IS_TASK_ACTIVE, ped.Handle, 135))
+                if (Function.Call<bool>(Hash.GET_IS_TASK_ACTIVE, ped.Handle, 135))
                 {
                     UI.Notify("anim scene");
-                }*/
+                }
 
-                if (!knownPeds.ContainsKey(ped.Handle) && IsPedValid(ped))
+                if (!trackedPeds.ContainsKey(ped.Handle) && ped.IsOnFoot)
                 {
                     ped.Task.ClearAllImmediately();
 
@@ -135,155 +141,225 @@ namespace JetThrustPhysics
                     Function.Call(Hash.ATTACH_SYNCHRONIZED_SCENE_TO_ENTITY, sceneId, vehicle, Function.Call<int>(Hash.GET_ENTITY_BONE_INDEX_BY_NAME, vehicle.Handle, "exhaust_1"));
                     Function.Call(Hash.TASK_SYNCHRONIZED_SCENE, ped, sceneId, "MISSSOLOMON_3", "molly_death", 1.5, -8.0, 4, 0, 0x447a0000, 0);
 
-                    knownPeds.Add(ped.Handle, new KnownPedInfo() { AnimSceneID = sceneId });
+                    trackedPeds.Add(ped.Handle, new TrackedPedInfo { AnimSceneID = sceneId });
                 }
 
                 else
                 {
                     if (Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, "MISSSOLOMON_3", "molly_death", 3))
                     {
-                        if (Function.Call<float>(Hash.GET_SYNCHRONIZED_SCENE_PHASE, knownPeds[ped.Handle].AnimSceneID) > 0.89)
+                        if (Function.Call<float>(Hash.GET_SYNCHRONIZED_SCENE_PHASE, trackedPeds[ped.Handle].AnimSceneID) > 0.89)
                         {
                             ped.Delete();
 
-                            RemovePed(ped);
+                            StopTracking(ped);
 
                             Function.Call(Hash.START_PARTICLE_FX_NON_LOOPED_ON_ENTITY, "scr_trev4_747_blood_impact", vehicle.Handle, 12.5793, 12.2, -7.094210147857666, 0.0, 0.0, 0.0, 1.0, 0, 0, 0);
 
-                            var fx = Function.Call<int>(Hash.START_PARTICLE_FX_LOOPED_ON_ENTITY, "scr_trev4_747_exhaust_plane_misfire", vehicle.Handle, -12.6323, 8.1153, -7.0876, 0.0, 0.0, 0.0, 1.0, 0, 0, 0);
+                            Function.Call<int>(Hash.START_PARTICLE_FX_LOOPED_ON_ENTITY, "scr_trev4_747_exhaust_plane_misfire", vehicle.Handle, -12.6323, 8.1153, -7.0876, 0.0, 0.0, 0.0, 1.0, 0, 0, 0);
 
                             var soundId = Function.Call<int>(Hash.GET_SOUND_ID);
 
-                            Function.Call(Hash.PLAY_SOUND_FROM_COORD, soundId, "Trevor_4_747_Man_Sucked_In", 938.6, -2984.1298828125, 15.47, 0, 0, 0, 0);                                                                       
+                            Function.Call(Hash.PLAY_SOUND_FROM_COORD, soundId, "Trevor_4_747_Man_Sucked_In", 938.6, -2984.1298828125, 15.47, 0, 0, 0, 0);
                         }
                     }
                 }
             }
         }
 
-        private unsafe void OnTick(object sender, EventArgs e)
+        private void OnTick(object sender, EventArgs e)
         {
             foreach (var vehicle in World.GetAllVehicles())
             {
-                if (Function.Call<int>(Hash.GET_VEHICLE_CLASS, vehicle) == 16)
+                if (Function.Call<int>(Hash.GET_VEHICLE_CLASS, vehicle) != 16) continue;
+
+                if (!trackedVehicles.ContainsKey(vehicle.Handle) && CanVehicleHaveEnginePhysics(vehicle))
                 {
-                    if (!knownVehicles.ContainsKey(vehicle.Handle) && IsVehicleValid(vehicle))
-                    {
-                        var turbineOffsets = Utility.EnumTurbineOffsets(vehicle);
+                    var vehicleInfo = new TrackedVehicleInfo(vehicle);
 
-                        knownVehicles.Add(vehicle.Handle, new KnownVehicleInfo()
-                        {
-                            Size = GetVehicleSize(vehicle),
-                            Offsets = turbineOffsets.ToArray()
-                        });
-                    }             
+                    vehicleInfo.StartHeatHaze();
 
-                    if (!IsVehicleValid(vehicle))
-                    {
-                        RemoveVehicle(vehicle);
-                        continue;
-                    }
-
-                    var info = knownVehicles[vehicle.Handle];
-
-                    for (int i = 0; i < info.Offsets.Length; i++)
-                    {
-                        var fThrottle = InteropExt.ReadFloat(new IntPtr(vehicle.MemoryAddress) + 0x1B70); //vehicle.Velocity.Length() / 30.0f;
-
-                        fThrottle *= 1.0f;
-
-                        if (fThrottle >= 1.0f) fThrottle = 1.0f;
-
-                        else if (fThrottle < 0.25f) fThrottle = 0.25f;
-
-                        var backtThrustDistance = EngineBackThrustExtremityScalar - (20.0f * (1.0f - fThrottle));
-
-                        if (info.Size == VehicleSize.Small)
-                            backtThrustDistance *= 0.6f;
-
-                        else if (info.Size == VehicleSize.Big)
-                            backtThrustDistance *= 1.4f;
-
-                        Vector3 forwardLeft = vehicle.GetOffsetInWorldCoords(info.Offsets[i] + new Vector3(0, EngineThrustExtremityScalar, 0f));
-
-                        Vector3 rightOffset = new Vector3(-info.Offsets[i].X, info.Offsets[i].Y, info.Offsets[i].Z);
-
-                        Vector3 forwardRight = vehicle.GetOffsetInWorldCoords(rightOffset + new Vector3(0, EngineThrustExtremityScalar, 0f));
-
-                        Vector3 rearLeft = vehicle.GetOffsetInWorldCoords(info.Offsets[i] - new Vector3(0, backtThrustDistance, 0f));
-
-                        var groundHeightLeft = World.GetGroundHeight(rearLeft);
-
-                        Vector3 rearRight = vehicle.GetOffsetInWorldCoords(rightOffset - new Vector3(0, backtThrustDistance, 0f));
-
-                        var groundHeightRight = World.GetGroundHeight(rearRight);                
-
-                        float scale = 0.0f, bottomOffset;
-
-                        Vector3 direction = Vector3.Normalize(rearLeft - forwardLeft);
-
-                        if (vehicle.Acceleration < 0.0f || vehicle.CurrentGear <= 0)
-                        {
-                            scale = ReverseThrustScale * fThrottle;
-                            direction = -direction;
-                        }
-
-                        else scale = ThrustScale * fThrottle;
-
-                        if (info.Size == VehicleSize.Big)
-                        {
-                            bottomOffset = 1.4f;
-                            scale *= 1.64f;
-                        }
-
-                        else if (info.Size == VehicleSize.Med)
-                        {
-                            bottomOffset = 1.3f;
-                            scale *= 1.4f;
-                        }
-
-                        else bottomOffset = 1.5f;
-
-                        if (GetEntityShapeTestCapsuleResult(forwardLeft, new Vector3(rearLeft.X, rearLeft.Y, groundHeightLeft), ThrustRadius, vehicle, out thrustForceTarget)) // left turbine
-                            ApplyThrustForce(thrustForceTarget, forwardLeft, direction, scale);
-
-                        if (GetEntityShapeTestCapsuleResult(forwardRight, new Vector3(rearRight.X, rearRight.Y, groundHeightRight), ThrustRadius, vehicle, out thrustForceTarget)) // right turbine
-                            ApplyThrustForce(thrustForceTarget, forwardRight, direction, scale);
-
-                        if (GetEntityShapeTestCapsuleResult(forwardLeft - new Vector3(0, 0, bottomOffset),  rearLeft - new Vector3(0, 0, bottomOffset), ThrustRadius, vehicle, out thrustForceTarget)) // left side bottom
-                            ApplyThrustForce(thrustForceTarget, forwardLeft, direction, scale);
-
-                        if (GetEntityShapeTestCapsuleResult(forwardRight - new Vector3(0, 0, bottomOffset), rearRight - new Vector3(0, 0, bottomOffset), ThrustRadius, vehicle, out thrustForceTarget)) // right side bottom
-                            ApplyThrustForce(thrustForceTarget, forwardRight, direction, scale);
-
-                      /*var animTriggerPos1 = vehicle.GetOffsetInWorldCoords(info.Offsets[i] + new Vector3(0, 12.0f, 0));
-                        var animTriggerPos2 = vehicle.GetOffsetInWorldCoords(rightOffset + new Vector3(0, 12.0f, 0));
-                        animTriggerPos1.Z = World.GetGroundHeight(animTriggerPos1);
-                        animTriggerPos2.Z = World.GetGroundHeight(animTriggerPos2);
-                        UpdateEngineAnimTrigger(vehicle, animTriggerPos1);
-                        UpdateEngineAnimTrigger(vehicle, animTriggerPos2);*/
-                    }
+                    trackedVehicles.Add(vehicle.Handle, vehicleInfo);
                 }
+
+                if (!CanVehicleHaveEnginePhysics(vehicle))
+                {
+                    StopTracking(vehicle);
+
+                    continue;
+                }
+
+                trackedVehicles[vehicle.Handle].Update();
             }
         }
 
-        protected override void Dispose(bool A_0)
+        private class TrackedVehicleInfo
         {
-            base.Dispose(A_0);
+            private readonly VehicleSize size;
+            private readonly Vector3[] offsets;
+            private readonly int numEngines;
+
+            public TrackedVehicleInfo(Vehicle v)
+            {
+                vehicle = v;
+                size = GetVehicleSizeInternal(v);
+                offsets = vehicle.EnumTurbineOffsets().ToArray();
+                numEngines = offsets.Length;
+            }
+
+            public void StartHeatHaze()
+            {
+                if (UserConfig.HeatHazeStrength <= 0.0f) return;
+
+                hazeFX = new LoopedParticle[offsets.Length];
+
+                for (var f = 0; f < hazeFX.Length; f++)
+                {
+                    hazeFX[f] = new LoopedParticle("scr_solomon3", "scr_trev4_747_engine_heathaze");
+
+                    if (!hazeFX[f].IsLoaded)
+                    {
+                        hazeFX[f].Load();
+                    }
+
+                    hazeFX[f].Start(vehicle, offsets[f] + new Vector3(0, -10.0f, 0), new Vector3(180, 0, 0), 2.0f * UserConfig.HeatHazeStrength, null);
+                }
+            }
+
+            public void StopHeatHaze()
+            {
+                foreach (LoopedParticle p in hazeFX)
+                {
+                    p.Remove();
+                }
+            }
+
+            public unsafe void Update()
+            {
+                var throttle = InteropUtility.ReadFloat(new IntPtr(vehicle.MemoryAddress) + MemoryAccess.ThrottleOffset);
+
+                for (int i = 0; i < numEngines; i++)
+                {
+                    var backThrustDistance = EngineBackThrustExtremityScalar - 28.0f * (1.0f - throttle);
+
+                    if (size == VehicleSize.Small)
+                        backThrustDistance *= 0.6f;
+
+                    else if (size == VehicleSize.Big)
+                        backThrustDistance *= 1.4f;
+
+                    Vector3 leftOffset = offsets[i];
+                    Vector3 rightOffset = new Vector3(-leftOffset.X, leftOffset.Y, leftOffset.Z);
+                    Vector3 forwardLeft =
+                        vehicle.GetOffsetInWorldCoords(leftOffset + new Vector3(0, EngineThrustExtremityScalar, 0f));
+                    Vector3 forwardRight =
+                        vehicle.GetOffsetInWorldCoords(rightOffset + new Vector3(0, EngineThrustExtremityScalar, 0f));
+                    Vector3 rearLeft =
+                        vehicle.GetOffsetInWorldCoords(leftOffset - new Vector3(0, backThrustDistance, 0f));
+
+                    var groundHeightLeft = World.GetGroundHeight(rearLeft);
+
+                    Vector3 rearRight =
+                        vehicle.GetOffsetInWorldCoords(rightOffset - new Vector3(0, backThrustDistance, 0f));
+
+                    var groundHeightRight = World.GetGroundHeight(rearRight);
+
+                    float scale = ThrustScale * UserConfig.ThrustMultiplier * throttle, bottomOffset;
+
+                    Vector3 direction = Vector3.Normalize(rearLeft - forwardLeft);
+
+                    if (vehicle.Acceleration < 0.0f ||
+                        Marshal.ReadInt16(new IntPtr(vehicle.MemoryAddress) + MemoryAccess.GearOffset) <= 0)
+                    {
+                        scale = ReverseThrustScale * UserConfig.ReverseThrustMultiplier * throttle;
+                        direction = -direction;
+                    }
+
+                    switch (size)
+                    {
+                        case VehicleSize.Big:
+                            bottomOffset = 1.469f;
+                            scale *= 1.32f;
+                            break;
+                        case VehicleSize.Med:
+                            bottomOffset = 1.1f;
+                            scale *= 1.0f;
+                            break;
+                        default:
+                            bottomOffset = 1.0f;
+                            scale *= 0.78f;
+                            break;
+                    }
+
+                    Entity target;
+
+                    float thrustRadius = 4.4f * UserConfig.ThrustRadius;
+
+                    // left turbine
+                    if (DoEntityCapsuleTest(forwardLeft, new Vector3(rearLeft.X, rearLeft.Y, groundHeightLeft),
+                        thrustRadius, vehicle, out target))
+                        ApplyThrustForce(target, forwardLeft, direction, scale);
+                    // right turbine
+                    if (DoEntityCapsuleTest(forwardRight, new Vector3(rearRight.X, rearRight.Y, groundHeightRight),
+                        thrustRadius, vehicle, out target))
+                        ApplyThrustForce(target, forwardRight, direction, scale);
+                    // left side bottom
+                    if (DoEntityCapsuleTest(forwardLeft - new Vector3(0, 0, bottomOffset),
+                        rearLeft - new Vector3(0, 0, bottomOffset), thrustRadius, vehicle, out target))
+                        ApplyThrustForce(target, forwardLeft, direction, scale);
+                    // right side bottom
+                    if (DoEntityCapsuleTest(forwardRight - new Vector3(0, 0, bottomOffset),
+                        rearRight - new Vector3(0, 0, bottomOffset), thrustRadius, vehicle, out target))
+                        ApplyThrustForce(target, forwardRight, direction, scale);
+
+                    if (hazeFX?.Length > i)
+                        hazeFX[i].SetEvolution("throttle", vehicle.Acceleration);
+
+                    bool b = Game.IsControlPressed(0, Control.VehicleHandbrake);
+
+                    Function.Call(Hash.SET_VEHICLE_BURNOUT, vehicle, b);
+
+                    Function.Call(Hash.SET_VEHICLE_HANDBRAKE, vehicle, b);
+
+                    if (UserConfig.UseThrottleExhaust && Game.IsControlJustPressed(0, Control.VehicleAccelerate))
+                    {
+                        Function.Call(Hash.REQUEST_NAMED_PTFX_ASSET, "scr_agencyheist");
+
+                        Function.Call(Hash._SET_PTFX_ASSET_NEXT_CALL, "scr_agencyheist");
+
+                        Function.Call(Hash.SET_PARTICLE_FX_NON_LOOPED_COLOUR, 1.0f, 1.0f, 1.0f);
+
+                        Function.Call(Hash.SET_PARTICLE_FX_NON_LOOPED_ALPHA, 0.6f);
+
+                        Function.Call(Hash.START_PARTICLE_FX_NON_LOOPED_AT_COORD, "scr_agency3a_door_hvy_trig",
+                            forwardLeft.X, forwardLeft.Y, forwardLeft.Z, vehicle.Rotation.X, vehicle.Rotation.Y,
+                            vehicle.Rotation.Z, 2f, 0, 0, 0);
+
+                        Function.Call(Hash.START_PARTICLE_FX_NON_LOOPED_AT_COORD, "scr_agency3a_door_hvy_trig",
+                            forwardRight.X, forwardRight.Y, forwardRight.Z, vehicle.Rotation.X, vehicle.Rotation.Y,
+                            vehicle.Rotation.Z, 2f, 0, 0, 0);
+                    }
+                }
+            }
+
+            private static VehicleSize GetVehicleSizeInternal(Vehicle vehicle)
+            {
+                var size = vehicle.Model.GetDimensions().Length();
+                if (size > 100.0f)
+                    return VehicleSize.Big;
+                return size > 40.0f ? VehicleSize.Med : VehicleSize.Small;
+            }
+
+            private readonly Vehicle vehicle;
+            private LoopedParticle[] hazeFX;
         }
 
-        struct KnownVehicleInfo
-        {
-            public VehicleSize Size;
-            public Vector3[] Offsets;
-        }
-
-        struct KnownPedInfo
+        private struct TrackedPedInfo
         {
             public int AnimSceneID;
         }
 
-        enum VehicleSize
+        private enum VehicleSize
         {
             Small,
             Med,

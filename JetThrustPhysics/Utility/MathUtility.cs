@@ -1,11 +1,10 @@
 ﻿using System;
 using GTA.Math;
 
-namespace JetThrustPhysics
+namespace JetBlast.Utility
 {
-    public static partial class Utility
+    public static class MathUtility
     {
-
         public static double RadToDeg(double rad)
         {
             return rad * 180.0 / Math.PI;
@@ -13,9 +12,7 @@ namespace JetThrustPhysics
 
         public static Vector3 InverseTransformDirection(Quaternion rotation, Vector3 vector)
         {
-
-            Vector3 output = Quaternion.Invert(rotation) * vector;
-            return output;
+            return Quaternion.Invert(rotation) * vector;
         }
 
         public static Vector3 DirectionToRotation(Vector3 direction)
@@ -32,6 +29,11 @@ namespace JetThrustPhysics
                 Y = (float)RadToDeg(y),
                 Z = (float)RadToDeg(z)
             };
+        }
+
+        public static Vector3 Inverse(this Vector3 v)
+        {
+            return v * -1.0f;
         }
     }
 }

@@ -1,12 +1,12 @@
-﻿using System.Drawing;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
+using System.Drawing;
 using GTA;
 using GTA.Math;
 using GTA.Native;
 
-namespace JetThrustPhysics
+namespace JetBlast.Utility
 {
-    public static partial class Utility
+    public static class GameUtility
     {
         public static void DrawMarker(int type, Vector3 position, Vector3 direction, Vector3 rotation, Vector3 scale3D, Color color, bool animate = false, bool faceCam = false, bool rotate = false)
         {
@@ -18,12 +18,17 @@ namespace JetThrustPhysics
             DrawMarker(2, position, Vector3.Zero, Vector3.Zero, new Vector3(2.0f, 2.0f, 2.0f), Color.Yellow);
         }
 
-        public static IEnumerable<Vector3> EnumTurbineOffsets(Vehicle vehicle)
+        public static void DrawLine(Vector3 start, Vector3 end, Color color)
+        {
+            Function.Call(Hash.DRAW_LINE, start.X, start.Y, start.Z, end.X, end.Y, end.Z, color.R, color.G, color.B, color.A);
+        }
+
+        public static IEnumerable<Vector3> EnumTurbineOffsets(this Vehicle vehicle)
         {
             if (Function.Call<int>(Hash.GET_VEHICLE_CLASS, vehicle) != 16)
                 yield return Vector3.Zero;
 
-            int boneIndex = 0;
+            int boneIndex;
 
             if ((boneIndex = Function.Call<int>(Hash.GET_ENTITY_BONE_INDEX_BY_NAME, vehicle.Handle, "afterburner")) != -1)
             {
@@ -31,9 +36,9 @@ namespace JetThrustPhysics
                 yield return Function.Call<Vector3>(Hash.GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS, vehicle.Handle, p.X, p.Y, p.Z);
             }
 
-            for (int i = 0; i < 6; i += 2)
+            for (int i = 0; i < 6; i+=2)
             {
-                if ((boneIndex = Function.Call<int>(Hash.GET_ENTITY_BONE_INDEX_BY_NAME, vehicle.Handle, string.Format("exhaust_{0}", i))) != -1)
+                if ((boneIndex = Function.Call<int>(Hash.GET_ENTITY_BONE_INDEX_BY_NAME, vehicle.Handle, $"exhaust_{i}")) != -1)
                 {
                     Vector3 p = Function.Call<Vector3>(Hash.GET_WORLD_POSITION_OF_ENTITY_BONE, vehicle.Handle, boneIndex);
                     yield return Function.Call<Vector3>(Hash.GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS, vehicle.Handle, p.X, p.Y, p.Z);

@@ -1,42 +1,36 @@
 ﻿using GTA;
-using GTA.Native;
 using GTA.Math;
+using GTA.Native;
 
-namespace JetThrustPhysics
+namespace JetBlast.Utility
 {
-    public class LoopedPTFX
+    public class LoopedParticle
     {
-        private float scale;
-
+        private float _scale;
         public int Handle { get; private set; }
-        public string AssetName { get; private set; }
-        public string FXName { get; private set; }
+        public string AssetName { get; }
+        public string FXName { get; }
 
         /// <summary>
         /// If the particle FX is spawned.
         /// </summary>
-        public bool Exists { get { if (Handle == -1) return false; return Function.Call<bool>(Hash.DOES_PARTICLE_FX_LOOPED_EXIST, Handle); } }
+        public bool Exists => Handle != -1 && Function.Call<bool>(Hash.DOES_PARTICLE_FX_LOOPED_EXIST, Handle);
 
         /// <summary>
         /// If the particle FX asset is loaded.
         /// </summary>
-        public bool IsLoaded { get { return Function.Call<bool>(Hash.HAS_NAMED_PTFX_ASSET_LOADED, AssetName); } }
+        public bool IsLoaded => Function.Call<bool>(Hash.HAS_NAMED_PTFX_ASSET_LOADED, AssetName);
 
         /// <summary>
         /// Set the particle FX scale.
         /// </summary>
-        public float Scale { get { return scale; } set { Function.Call(Hash.SET_PARTICLE_FX_LOOPED_SCALE, Handle, scale = value); } }
+        public float Scale { get { return _scale; } set { Function.Call(Hash.SET_PARTICLE_FX_LOOPED_SCALE, Handle, _scale = value); } }
 
-        /// <summary>
-        /// Set the particle FX looped colour.
-        /// </summary>
-        // public Color Colour { set { Function.Call(Hash.SET_PARTICLE_FX_LOOPED_COLOUR, Handle, value.R, value.G, value.B, 0); } }
-
-        public LoopedPTFX(string assetName, string fxName)
+        public LoopedParticle(string assetName, string fxName)
         {
-            this.Handle = -1;
-            this.AssetName = assetName;
-            this.FXName = fxName;
+            Handle = -1;
+            AssetName = assetName;
+            FXName = fxName;
             Load();
         }
 
@@ -45,14 +39,13 @@ namespace JetThrustPhysics
         /// </summary>
         public void Load()
         {
-            if (!IsLoaded)
-            {
-                Function.Call(Hash.REQUEST_NAMED_PTFX_ASSET, AssetName);
+            if (IsLoaded) return;
 
-                while (!Function.Call<bool>(Hash.HAS_NAMED_PTFX_ASSET_LOADED, AssetName))
-                {
-                    Script.Yield();
-                }
+            Function.Call(Hash.REQUEST_NAMED_PTFX_ASSET, AssetName);
+
+            while (!Function.Call<bool>(Hash.HAS_NAMED_PTFX_ASSET_LOADED, AssetName))
+            {
+                Script.Yield();
             }
         }
 
@@ -68,7 +61,7 @@ namespace JetThrustPhysics
         {
             if (Handle != -1) return;
 
-            this.scale = scale;
+            _scale = scale;
 
             Function.Call(Hash._SET_PTFX_ASSET_NEXT_CALL, AssetName);
 
@@ -99,7 +92,7 @@ namespace JetThrustPhysics
         {
             if (Handle != -1) return;
 
-            this.scale = scale;
+            _scale = scale;
 
             Function.Call(Hash._SET_PTFX_ASSET_NEXT_CALL, AssetName);
 
